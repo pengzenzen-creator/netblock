@@ -45,43 +45,47 @@ li.b .dot{background:#ff3b30;border-color:#ff3b30}
 <script>
 const SYS='/sys/kernel/netblock';
 const COLORS=['#e74c3c','#e67e22','#f1c40f','#2ecc71','#1abc9c','#3498db','#9b59b6','#e91e63','#00bcd4','#795548'];
-let blocked=new Set(),userApps=[],sysApps=[],filter='',showSys=false;
+let blocked=new Set(),userApps=[],sysApps=null,filter='',showSys=false;
 function hashColor(s){let h=0;for(const c of s)h=(h*31+c.charCodeAt(0))>>>0;return COLORS[h%COLORS.length]}
-function exec(cmd){return new Promise(r=>{const cb='cb'+Math.random().toString(36).slice(2);const t=setTimeout(()=>{delete window[cb];r({errno:-2,out:''})},8000);window[cb]=(err,out)=>{clearTimeout(t);delete window[cb];r({errno:err,out:out||''})};try{ksu.exec(cmd,'{}',cb)}catch(e){clearTimeout(t);delete window[cb];r({errno:-1,out:''})}})}
+function exec(cmd,timeout=8000){return new Promise(r=>{const cb='cb'+Math.random().toString(36).slice(2);const t=setTimeout(()=>{delete window[cb];r({errno:-2,out:''})},timeout);window[cb]=(err,out)=>{clearTimeout(t);delete window[cb];r({errno:err,out:out||''})};try{ksu.exec(cmd,'{}',cb)}catch(e){clearTimeout(t);delete window[cb];r({errno:-1,out:''})}})}
 function parseApps(out,isSys){
   const arr=[];
   out.split('\n').forEach(l=>{const m=l.match(/^package:(.+?) uid:(\d+)$/);if(m)arr.push({pkg:m[1],uid:+m[2],label:m[1],sys:isSys})});
   return arr;
 }
-async function loadLabels(arr){
-  // 只信官方 getPackagesInfo: 管理器缓存有 label 就用, 没有保持包名 (绝不猜)
-  try{
-    const names=JSON.stringify(arr.map(p=>p.pkg));
+// 后端优化: 一次 exec 拿全部 (enabled + blocked + 三方应用), 系统应用懒加载
+async function init(){
+  const r=await exec('cat '+SYS+'/enabled; echo ---; cat '+SYS+'/list; echo ---; pm list packages -U -e -3',12000);
+  const parts=r.out.split('---');
+  if(r.errno!==0||parts.length<3||(parts[0].trim()!=='0'&&parts[0].trim()!=='1')){
+    document.getElementById('list').innerHTML='<li class="hint">模块未加载</li>';return;
+  }
+  const sw=document.getElementById('sw');
+  if(parts[0].trim()==='1')sw.classList.add('on');
+  sw.onclick=async()=>{const on=sw.classList.toggle('on');await exec('echo '+(on?1:0)+' > '+SYS+'/enabled')};
+  blocked=new Set(parts[1].trim().split('\n').filter(Boolean).map(Number));
+  userApps=parseApps(parts[2],false);
+  const ms=document.getElementById('showSys');
+  ms.onclick=async()=>{
+    showSys=ms.classList.toggle('on');
+    if(showSys&&!sysApps){ // 懒加载: 首次打开才拉系统应用
+      const sr=await exec('pm list packages -U -e -s',12000);
+      sysApps=parseApps(sr.out,true).filter(a=>!userApps.some(u=>u.pkg===a.pkg));
+    }
+    render();
+  };
+  document.getElementById('q').oninput=e=>{filter=e.target.value;render()};
+  render();
+  try{ // label 尽力而为: 缓存有就用
+    const names=JSON.stringify(userApps.map(p=>p.pkg));
     const info=JSON.parse(ksu.getPackagesInfo(names));
-    info.forEach(i=>{if(!i.error&&i.appLabel){const p=arr.find(x=>x.pkg===i.packageName);if(p)p.label=i.appLabel}});
+    info.forEach(i=>{if(!i.error&&i.appLabel){const p=userApps.find(x=>x.pkg===i.packageName);if(p)p.label=i.appLabel}});
     render();
   }catch(e){}
 }
-async function init(){
-  const en=await exec('cat '+SYS+'/enabled');
-  if(en.errno!==0||(en.out.trim()!=='0'&&en.out.trim()!=='1')){document.getElementById('list').innerHTML='<li class="hint">模块未加载</li>';return}
-  const sw=document.getElementById('sw');
-  if(en.out.trim()==='1')sw.classList.add('on');
-  sw.onclick=async()=>{const on=sw.classList.toggle('on');await exec('echo '+(on?1:0)+' > '+SYS+'/enabled')};
-  const ms=document.getElementById('showSys');
-  ms.onclick=()=>{showSys=ms.classList.toggle('on');render()};
-  const [ur,sr]=await Promise.all([exec('pm list packages -U -e -3'),exec('pm list packages -U -e -s')]);
-  userApps=parseApps(ur.out,false);
-  sysApps=parseApps(sr.out,true).filter(a=>!userApps.some(u=>u.pkg===a.pkg));
-  const bl=await exec('cat '+SYS+'/list');
-  blocked=new Set(bl.out.trim().split('\n').filter(Boolean).map(Number));
-  document.getElementById('q').oninput=e=>{filter=e.target.value;render()};
-  render();
-  loadLabels([...userApps,...sysApps]);
-}
 function render(){
   const kw=filter.toLowerCase();
-  let arr=showSys?[...userApps,...sysApps]:userApps;
+  let arr=showSys&&sysApps?[...userApps,...sysApps]:userApps;
   if(kw)arr=arr.filter(a=>a.pkg.includes(kw)||a.label.toLowerCase().includes(kw));
   arr.sort((a,b)=>{
     const ab=blocked.has(a.uid)?0:1,bb=blocked.has(b.uid)?0:1;
@@ -94,7 +98,7 @@ function render(){
   }).join(''):'<li class="empty">无应用</li>';
 }
 async function tog(uid){
-  const en=await exec('cat '+SYS+'/enabled');
+  const en=await exec('cat '+SYS+'/enabled',3000);
   if(en.out.trim()!=='1')return;
   if(blocked.has(uid)){await exec('echo '+uid+' > '+SYS+'/remove_uid');blocked.delete(uid)}
   else{await exec('echo '+uid+' > '+SYS+'/add_uid');blocked.add(uid)}
