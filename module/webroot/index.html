@@ -6,43 +6,47 @@
 <title>NetBlock</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font:14px/1.5 -apple-system,sans-serif;background:#fff;color:#111;padding-bottom:60px}
-header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #eee;position:sticky;top:0;background:#fff;z-index:10}
+body{font:14px/1.5 -apple-system,sans-serif;background:#fff;color:#111}
+.top{position:sticky;top:0;background:#fff;z-index:10;box-shadow:0 1px 0 #eee}
+header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px}
 h1{font-size:17px;font-weight:600}
 .switch{width:46px;height:26px;background:#ddd;border-radius:13px;position:relative;cursor:pointer;transition:.2s}
 .switch.on{background:#34c759}
 .switch::after{content:'';width:22px;height:22px;background:#fff;border-radius:50%;position:absolute;top:2px;left:2px;transition:.2s;box-shadow:0 1px 2px rgba(0,0,0,.2)}
 .switch.on::after{left:22px}
-.search{padding:10px 16px;border-bottom:1px solid #eee;position:sticky;top:57px;background:#fff;z-index:5}
-.search input{width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:14px;outline:none}
-.togglebar{padding:8px 16px;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;justify-content:space-between;background:#fafafa}
+.search{padding:0 16px 10px}
+.search input{width:100%;padding:8px 12px;border:1px solid #e0e0e0;border-radius:8px;font-size:14px;outline:none;background:#f7f7f7}
+.togglebar{display:flex;align-items:center;justify-content:space-between;padding:9px 16px;border-top:1px solid #f0f0f0}
 .togglebar label{font-size:13px;color:#666}
 .mini{width:36px;height:20px;background:#ddd;border-radius:10px;position:relative;cursor:pointer;transition:.2s}
 .mini.on{background:#34c759}
 .mini::after{content:'';width:16px;height:16px;background:#fff;border-radius:50%;position:absolute;top:2px;left:2px;transition:.2s;box-shadow:0 1px 2px rgba(0,0,0,.2)}
 .mini.on::after{left:18px}
 ul{list-style:none}
-li{display:flex;align-items:center;padding:11px 16px;border-bottom:1px solid #f5f5f5;cursor:pointer;gap:10px}
+li{display:flex;align-items:center;padding:11px 16px;border-bottom:1px solid #f5f5f5;cursor:pointer;gap:12px}
 li:active{background:#fafafa}
-.icon{width:32px;height:32px;border-radius:7px;background:#e8e8e8;display:flex;align-items:center;justify-content:center;font-weight:600;color:#666;flex-shrink:0;font-size:15px}
-li.b .icon{background:#ffe3e0;color:#ff3b30}
+.icon{width:36px;height:36px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-weight:600;color:#fff;flex-shrink:0;font-size:16px}
 .info{flex:1;min-width:0}
 .name{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pkg{font-size:11px;color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.dot{width:14px;height:14px;border:1.5px solid #ccc;border-radius:50%;flex-shrink:0}
+.dot{width:16px;height:16px;border:2px solid #ccc;border-radius:50%;flex-shrink:0}
 li.b .dot{background:#ff3b30;border-color:#ff3b30}
 .empty{padding:30px;text-align:center;color:#999;cursor:default}
 .hint{padding:30px 16px;text-align:center;color:#c0392b;font-size:13px;cursor:default}
 </style>
 </head>
 <body>
-<header><h1>NetBlock</h1><div class="switch" id="sw"></div></header>
-<div class="search"><input id="q" placeholder="搜索应用"></div>
-<div class="togglebar"><label>显示系统应用</label><div class="mini" id="showSys"></div></div>
+<div class="top">
+  <header><h1>NetBlock</h1><div class="switch" id="sw"></div></header>
+  <div class="search"><input id="q" placeholder="搜索应用"></div>
+  <div class="togglebar"><label>显示系统应用</label><div class="mini" id="showSys"></div></div>
+</div>
 <ul id="list"><li class="empty">加载中...</li></ul>
 <script>
 const SYS='/sys/kernel/netblock';
+const COLORS=['#e74c3c','#e67e22','#f1c40f','#2ecc71','#1abc9c','#3498db','#9b59b6','#e91e63','#00bcd4','#795548'];
 let blocked=new Set(),userApps=[],sysApps=[],filter='',showSys=false;
+function hashColor(s){let h=0;for(const c of s)h=(h*31+c.charCodeAt(0))>>>0;return COLORS[h%COLORS.length]}
 function exec(cmd){return new Promise(r=>{const cb='cb'+Math.random().toString(36).slice(2);const t=setTimeout(()=>{delete window[cb];r({errno:-2,out:''})},8000);window[cb]=(err,out)=>{clearTimeout(t);delete window[cb];r({errno:err,out:out||''})};try{ksu.exec(cmd,'{}',cb)}catch(e){clearTimeout(t);delete window[cb];r({errno:-1,out:''})}})}
 function parseApps(out,isSys){
   const arr=[];
@@ -50,14 +54,12 @@ function parseApps(out,isSys){
   return arr;
 }
 async function loadLabels(arr){
-  // 1) 官方 getPackagesInfo: 管理器缓存已加载则有 label (尽力而为)
   try{
     const names=JSON.stringify(arr.map(p=>p.pkg));
     const info=JSON.parse(ksu.getPackagesInfo(names));
     info.forEach(i=>{if(!i.error&&i.appLabel){const p=arr.find(x=>x.pkg===i.packageName);if(p)p.label=i.appLabel}});
   }catch(e){}
-  // 2) 后台补: resolve-activity 拿 activity 名当 label (只补可见前 50, 分批)
-  const batch=arr.filter(p=>p.label===p.pkg).slice(0,50);
+  const batch=arr.filter(p=>p.label===p.pkg).slice(0,60);
   let i=0;
   const step=async()=>{
     if(i>=batch.length){render();return}
@@ -67,7 +69,7 @@ async function loadLabels(arr){
       const lines=r.out.split('\n').filter(l=>l&&!l.includes('priority='));
       if(lines.length&&lines[0].includes('/')){
         const act=lines[0].split('/').pop();
-        if(act&&act.length<40)p.label=act.replace(/(Activity|Activity$)/,'');
+        if(act&&act.length<40)p.label=act.replace(/(Activity|$)/,'');
       }
     }
     if(i%10===0)render();
@@ -103,7 +105,7 @@ function render(){
   });
   document.getElementById('list').innerHTML=arr.length?arr.map(a=>{
     const b=blocked.has(a.uid);
-    return `<li class="${b?'b':''}" onclick="tog(${a.uid})"><div class="icon">${(a.label[0]||'?').toUpperCase()}</div><div class="info"><div class="name">${a.label}</div><div class="pkg">${a.pkg}</div></div><span class="dot"></span></li>`;
+    return `<li class="${b?'b':''}" onclick="tog(${a.uid})"><div class="icon" style="background:${hashColor(a.pkg)}">${(a.label[0]||'?').toUpperCase()}</div><div class="info"><div class="name">${a.label}</div><div class="pkg">${a.pkg}</div></div><span class="dot"></span></li>`;
   }).join(''):'<li class="empty">无应用</li>';
 }
 async function tog(uid){
