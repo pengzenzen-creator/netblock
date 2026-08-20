@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NetBlock</title>
+<style>
+:root {
+  --bg: #0f1115;
+  --card: #1a1d24;
+  --border: #2a2e37;
+  --text: #e8eaed;
+  --muted: #9aa0a6;
+  --primary: #4f8cff;
+  --danger: #ff5c5c;
+  --success: #34c759;
+  --radius: 16px;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  padding: 20px;
+}
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+.header h1 {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+.header .badge {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  background: var(--danger);
+  color: #fff;
+}
+.header .badge.on {
+  background: var(--success);
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 16px;
+}
+.card h3 {
+  font-size: 15px;
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.switch-row .label {
+  font-size: 15px;
+}
+.switch-row .desc {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.switch {
+  position: relative;
+  width: 50px;
+  height: 28px;
+  background: var(--border);
+  border-radius: 14px;
+  transition: background 0.3s;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.switch.on {
+  background: var(--success);
+}
+.switch::after {
+  content: '';
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  background: #fff;
+  border-radius: 50%;
+  top: 3px;
+  left: 3px;
+  transition: transform 0.3s;
+}
+.switch.on::after {
+  transform: translateX(22px);
+}
+.add-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+input[type="text"], input[type="number"] {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 14px;
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+}
+input:focus { border-color: var(--primary); }
+.btn {
+  padding: 10px 18px;
+  border: none;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s;
+  white-space: nowrap;
+}
+.btn:active { opacity: 0.7; }
+.btn-primary { background: var(--primary); color: #fff; }
+.btn-danger { background: var(--danger); color: #fff; }
+.btn-ghost { background: var(--border); color: var(--text); }
+.uid-list {
+  list-style: none;
+}
+.uid-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+.uid-list li:last-child { border-bottom: none; }
+.uid-list .uid {
+  font-family: "SF Mono", "JetBrains Mono", monospace;
+  background: var(--bg);
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.uid-list .remove {
+  background: none;
+  border: none;
+  color: var(--danger);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+.empty {
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 16px 0;
+}
+.toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(100px);
+  background: #2d3138;
+  color: #fff;
+  padding: 10px 20px;
+  border-radius: 12px;
+  font-size: 14px;
+  transition: transform 0.3s;
+  z-index: 100;
+}
+.toast.show { transform: translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>⚡ NetBlock</h1>
+  <span class="badge" id="statusBadge">加载中</span>
+</div>
+
+<div class="card">
+  <div class="switch-row">
+    <div>
+      <div class="label">联网拦截</div>
+      <div class="desc">启用后阻止列表内 UID 的所有出站网络</div>
+    </div>
+    <div class="switch" id="mainSwitch" onclick="toggleEnabled()"></div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>添加 UID</h3>
+  <div class="add-row">
+    <input type="number" id="uidInput" placeholder="例如 10258 (应用 UID)">
+    <button class="btn btn-primary" onclick="addUid()">添加</button>
+  </div>
+  <ul class="uid-list" id="uidList">
+    <li class="empty">加载中...</li>
+  </ul>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const SYSFS = '/sys/kernel/netblock';
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2000);
+}
+
+async function run(cmd) {
+  try {
+    const res = await fetch(`http://localhost:8080/exec?cmd=${encodeURIComponent(cmd)}`);
+    return await res.text();
+  } catch (e) {
+    return '';
+  }
+}
+
+async function refresh() {
+  // 读取状态
+  const enabled = (await run(`cat ${SYSFS}/enabled`)).trim();
+  const badge = document.getElementById('statusBadge');
+  const sw = document.getElementById('mainSwitch');
+  if (enabled === '1') {
+    badge.textContent = '已启用';
+    badge.className = 'badge on';
+    sw.classList.add('on');
+  } else {
+    badge.textContent = '已停用';
+    badge.className = 'badge';
+    sw.classList.remove('on');
+  }
+
+  // 读取 UID 列表
+  const list = await run(`cat ${SYSFS}/list`);
+  const ul = document.getElementById('uidList');
+  const uids = list.trim().split('\n').filter(Boolean);
+  if (uids.length === 0) {
+    ul.innerHTML = '<li class="empty">暂无阻止的 UID</li>';
+  } else {
+    ul.innerHTML = uids.map(uid => `
+      <li>
+        <span class="uid">${uid}</span>
+        <button class="remove" onclick="removeUid(${uid})">✕</button>
+      </li>
+    `).join('');
+  }
+}
+
+async function toggleEnabled() {
+  const sw = document.getElementById('mainSwitch');
+  const target = sw.classList.contains('on') ? '0' : '1';
+  await run(`echo ${target} > ${SYSFS}/enabled`);
+  await refresh();
+  toast(target === '1' ? '已启用拦截' : '已停用拦截');
+}
+
+async function addUid() {
+  const input = document.getElementById('uidInput');
+  const uid = input.value.trim();
+  if (!uid || isNaN(uid)) {
+    toast('请输入有效的 UID');
+    return;
+  }
+  await run(`echo ${uid} > ${SYSFS}/add_uid`);
+  input.value = '';
+  await refresh();
+  toast(`已阻止 UID ${uid}`);
+}
+
+async function removeUid(uid) {
+  await run(`echo ${uid} > ${SYSFS}/remove_uid`);
+  await refresh();
+  toast(`已解除 UID ${uid}`);
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
