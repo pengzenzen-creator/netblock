@@ -1,0 +1,1 @@
+savedcmd_/home/tees/netblock/netblock.ko := ld.lld -r -EL  -maarch64elf -z norelro --compress-debug-sections=zstd -z noexecstack --build-id=sha1  -T scripts/module.lds -o /home/tees/netblock/netblock.ko /home/tees/netblock/netblock.o /home/tees/netblock/netblock.mod.o;  make -f ../arch/arm64/Makefile.postlink /home/tees/netblock/netblock.ko

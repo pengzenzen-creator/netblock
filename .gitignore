@@ -1,0 +1,6 @@
+netblock.ko
+netblock_crc_fixed.ko
+*.o
+*.mod*
+Module.symvers*
+modules.order

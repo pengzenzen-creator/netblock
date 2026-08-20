@@ -1,0 +1,66 @@
+name: Build netblock.ko (DDK LKM)
+
+on:
+  workflow_dispatch:
+    inputs:
+      kmi:
+        description: 'KMI version'
+        required: true
+        default: 'android15-6.6'
+        type: choice
+        options:
+          - 'android15-6.6'
+          - 'android16-6.12'
+          - 'android14-6.1'
+      ddk_release:
+        description: 'DDK release'
+        required: true
+        default: '20260313'
+        type: string
+
+jobs:
+  build-netblock-ko:
+    name: Build netblock.ko for ${{ inputs.kmi }}-${{ inputs.ddk_release }}
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/ylarod/ddk:${{ inputs.kmi }}-${{ inputs.ddk_release }}
+      options: --privileged
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v6
+
+      - name: Build netblock.ko
+        run: |
+          set -e
+          KMI=${{ inputs.kmi }}
+
+          echo "=== Building netblock.ko for KMI: $KMI ==="
+
+          # Source (照 rekernel_x: 源码放 drivers/ 下)
+          cp -r ./drivers/netblock /opt/ddk/src/$KMI/drivers/netblock
+
+          # Build
+          cd /opt/ddk/src/$KMI
+          make -C /opt/ddk/kdir/$KMI \
+            M=/opt/ddk/src/$KMI/drivers/netblock \
+            CC="clang" \
+            modules
+
+          echo "=== Build completed ==="
+
+          # Artifact
+          mkdir -p /github/workspace/out
+          OUTPUT_NAME="netblock-${{ inputs.kmi }}-${{ inputs.ddk_release }}.ko"
+          cp /opt/ddk/src/$KMI/drivers/netblock/netblock.ko "/github/workspace/out/$OUTPUT_NAME"
+          llvm-strip -d "/github/workspace/out/$OUTPUT_NAME"
+          echo "=== Output ==="
+          ls -la "/github/workspace/out/$OUTPUT_NAME"
+          echo "vermagic:"
+          strings "/github/workspace/out/$OUTPUT_NAME" | grep vermagic
+
+      - name: Upload netblock.ko artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: netblock-${{ inputs.kmi }}-${{ inputs.ddk_release }}.ko
+          path: /github/workspace/out/netblock-${{ inputs.kmi }}-${{ inputs.ddk_release }}.ko
