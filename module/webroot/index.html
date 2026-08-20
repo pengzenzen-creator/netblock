@@ -65,6 +65,13 @@ header h1 { font-size: 17px; font-weight: 600; }
 }
 .search input:focus { border-color: #aaa; }
 
+.count {
+  padding: 8px 16px;
+  color: #999;
+  font-size: 12px;
+  background: #f5f5f5;
+  border-bottom: 1px solid #eee;
+}
 ul.apps {
   list-style: none;
   background: #fff;
@@ -90,6 +97,7 @@ ul.apps li:active { background: #f5f5f5; }
   color: #666;
   flex-shrink: 0;
 }
+ul.apps li.blocked-item .app-icon { background: #ffe3e0; color: #ff3b30; }
 .app-info { flex: 1; min-width: 0; }
 .app-name {
   font-size: 14px;
@@ -118,12 +126,17 @@ ul.apps li:active { background: #f5f5f5; }
 }
 .app-check.blocked { background: #ff3b30; border-color: #ff3b30; }
 .empty { padding: 32px 16px; text-align: center; color: #999; font-size: 14px; }
-.count {
-  padding: 8px 16px;
-  color: #999;
-  font-size: 12px;
-  background: #f5f5f5;
+.error-box {
+  margin: 16px;
+  padding: 16px;
+  background: #fff;
+  border: 1px solid #f0c0c0;
+  border-radius: 10px;
+  color: #c0392b;
+  font-size: 14px;
+  line-height: 1.6;
 }
+.error-box .hint { color: #999; font-size: 12px; margin-top: 6px; }
 
 .toast {
   position: fixed;
@@ -139,6 +152,10 @@ ul.apps li:active { background: #f5f5f5; }
   transition: opacity .2s;
   pointer-events: none;
   z-index: 100;
+  white-space: nowrap;
+  max-width: 90%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .toast.show { opacity: 1; }
 </style>
@@ -153,7 +170,6 @@ ul.apps li:active { background: #f5f5f5; }
 <div class="search">
   <input type="text" id="searchInput" placeholder="搜索应用">
 </div>
-
 <div class="count" id="appCount"></div>
 <ul class="apps" id="appList"><li class="empty">加载中...</li></ul>
 
@@ -169,16 +185,23 @@ function toast(msg) {
   setTimeout(() => t.classList.remove('show'), 1500);
 }
 
-function exec(cmd) {
+// ksu.exec 异步封装: window[cb](errno, stdout)
+function exec(cmd, timeout = 10000) {
   return new Promise((resolve) => {
     const cb = 'cb_' + Math.random().toString(36).slice(2);
+    const timer = setTimeout(() => {
+      delete window[cb];
+      resolve({ errno: -2, stdout: '', timeout: true });
+    }, timeout);
     window[cb] = (errno, stdout) => {
+      clearTimeout(timer);
       delete window[cb];
       resolve({ errno, stdout: stdout || '' });
     };
     try {
       ksu.exec(cmd, '{}', cb);
     } catch (e) {
+      clearTimeout(timer);
       delete window[cb];
       resolve({ errno: -1, stdout: '' });
     }
@@ -188,28 +211,75 @@ function exec(cmd) {
 let blockedUids = new Set();
 let allApps = [];
 let currentFilter = '';
+let moduleOk = true;
 
-// 用 pm list packages -U -e 拿全部应用 UID (可靠, 不依赖管理器缓存)
+async function checkModule() {
+  const r = await exec(`cat ${SYS}/enabled`, 5000);
+  if (r.timeout || r.errno !== 0 || (r.stdout.trim() !== '0' && r.stdout.trim() !== '1')) {
+    moduleOk = false;
+    document.getElementById('appList').innerHTML = `
+      <div class="error-box">
+        内核模块未加载
+        <div class="hint">请确认已重装模块并重启，或检查 /sys/kernel/netblock 是否存在</div>
+      </div>`;
+    return false;
+  }
+  return true;
+}
+
 async function loadApps() {
-  const r = await exec('pm list packages -U -e');
+  // pm list packages -U -e: 一次拿全部应用 + uid (不依赖管理器缓存)
+  const r = await exec('pm list packages -U -e', 15000);
   const pkgs = [];
   r.stdout.split('\n').forEach(line => {
     const m = line.match(/^package:(.+?) uid:(\d+)$/);
     if (m) {
       const uid = parseInt(m[2]);
-      if (uid >= 10000) pkgs.push({ pkg: m[1], uid });
+      if (uid >= 10000 && !pkgs.some(p => p.pkg === m[1])) {
+        pkgs.push({ pkg: m[1], uid, label: m[1] });
+      }
     }
   });
-  // 尝试拿 label (官方 API, 缓存空则回退包名)
+
+  // 尝试官方 API 拿 label (缓存为空时降级为包名)
+  let labeled = 0;
   try {
-    const info = JSON.parse(ksu.getPackagesInfo(JSON.stringify(pkgs.map(p => p.pkg))));
-    const labelMap = {};
-    info.forEach(i => { if (!i.error && i.appLabel) labelMap[i.packageName] = i.appLabel; });
-    pkgs.forEach(p => { p.label = labelMap[p.pkg] || p.pkg; });
-  } catch (e) {
-    pkgs.forEach(p => { p.label = p.pkg; });
+    const names = JSON.stringify(pkgs.map(p => p.pkg));
+    const arr = JSON.parse(ksu.getPackagesInfo(names));
+    arr.forEach(item => {
+      if (!item.error && item.appLabel) {
+        const p = pkgs.find(x => x.pkg === item.packageName);
+        if (p) { p.label = item.appLabel; labeled++; }
+      }
+    });
+  } catch (e) { /* 降级包名 */ }
+  if (labeled === 0 && pkgs.length > 0) {
+    // 全部无 label: 尝试 dumpsys 批量拿 (仅一次, 后台补)
+    tryLabelBackup(pkgs);
   }
-  allApps = pkgs.sort((a, b) => a.label.localeCompare(b.label));
+  allApps = pkgs;
+  return pkgs.length;
+}
+
+// label 兜底: dumpsys package 逐包太慢, 改用单次 dumpsys package packages 解析
+async function tryLabelBackup(pkgs) {
+  try {
+    const r = await exec('dumpsys package packages', 8000);
+    if (r.timeout || !r.stdout) return;
+    const blocks = {};
+    const re = /Package \[(.+?)\] \((.+?)\):\s*([\s\S]*?)(?=\n\s*Package \[|\n\s*Hidden Settings)/g;
+    let m;
+    while ((m = re.exec(r.stdout)) !== null) {
+      const pkg = m[1];
+      const lm = m[3].match(/labelId=0x([0-9a-f]+)\s+[^\n]*\n\s+label=(".*?"|\S+)/i);
+      blocks[pkg] = lm ? lm[2].replace(/"/g, '') : null;
+    }
+    let found = 0;
+    pkgs.forEach(p => {
+      if (blocks[p.pkg]) { p.label = blocks[p.pkg]; found++; }
+    });
+    if (found > 0) render();
+  } catch (e) { /* 保持包名 */ }
 }
 
 async function loadBlocked() {
@@ -220,25 +290,34 @@ async function loadBlocked() {
 function render() {
   const list = document.getElementById('appList');
   const kw = currentFilter.toLowerCase();
-  const apps = allApps.filter(a =>
+  let apps = allApps.filter(a =>
     !kw || a.pkg.toLowerCase().includes(kw) || a.label.toLowerCase().includes(kw)
   );
+  // 已阻止的置顶
+  apps.sort((a, b) => {
+    const ab = blockedUids.has(a.uid) ? 0 : 1;
+    const bb = blockedUids.has(b.uid) ? 0 : 1;
+    if (ab !== bb) return ab - bb;
+    return a.label.localeCompare(b.label, 'zh');
+  });
   document.getElementById('appCount').textContent =
     `${blockedUids.size} 个已阻止 · ${allApps.length} 个应用`;
   if (apps.length === 0) {
-    list.innerHTML = '<li class="empty">无匹配应用</li>';
+    list.innerHTML = `<li class="empty">${allApps.length === 0 ? '无应用或加载失败' : '无匹配应用'}</li>`;
     return;
   }
-  list.innerHTML = apps.map(a => `
-    <li onclick="toggle('${a.pkg}', ${a.uid})">
+  list.innerHTML = apps.map(a => {
+    const blocked = blockedUids.has(a.uid);
+    return `
+    <li class="${blocked ? 'blocked-item' : ''}" onclick="toggle('${a.pkg}', ${a.uid})">
       <div class="app-icon">${(a.label[0] || '?').toUpperCase()}</div>
       <div class="app-info">
-        <div class="app-name">${a.label}</div>
+        <div class="app-name">${a.label}${blocked ? ' <span style="color:#ff3b30;font-size:11px">已阻止</span>' : ''}</div>
         <div class="app-pkg">${a.pkg}</div>
       </div>
-      <div class="app-check ${blockedUids.has(a.uid) ? 'blocked' : ''}">${blockedUids.has(a.uid) ? '✕' : ''}</div>
-    </li>
-  `).join('');
+      <div class="app-check ${blocked ? 'blocked' : ''}">${blocked ? '✕' : ''}</div>
+    </li>`;
+  }).join('');
 }
 
 async function toggle(pkg, uid) {
@@ -260,11 +339,10 @@ async function toggle(pkg, uid) {
 }
 
 async function init() {
+  if (!(await checkModule())) return;
   const r = await exec(`cat ${SYS}/enabled`);
   const sw = document.getElementById('mainSwitch');
-  if (r.stdout.trim() === '1') {
-    sw.classList.add('on');
-  }
+  if (r.stdout.trim() === '1') sw.classList.add('on');
   sw.onclick = async () => {
     const on = sw.classList.toggle('on');
     await exec(`echo ${on ? 1 : 0} > ${SYS}/enabled`);
@@ -275,7 +353,13 @@ async function init() {
     render();
   });
   await loadBlocked();
-  await loadApps();
+  const n = await loadApps();
+  if (!moduleOk) return;
+  if (n === 0) {
+    document.getElementById('appList').innerHTML =
+      '<li class="empty">未获取到应用列表</li>';
+    return;
+  }
   render();
 }
 
