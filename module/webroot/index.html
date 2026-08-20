@@ -12,8 +12,9 @@ body{font:14px/1.5 -apple-system,sans-serif;background:#fff;color:#111}
 header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px}
 h1{font-size:17px;font-weight:600}
 .actions{display:flex;align-items:center;gap:14px}
-.refresh{width:28px;height:28px;border:none;background:none;font-size:18px;color:#666;cursor:pointer;padding:0;line-height:1;transition:transform .3s}
-.refresh:active{transform:rotate(180deg)}
+.refresh{width:36px;height:36px;border:none;background:none;font-size:22px;color:#666;cursor:pointer;padding:0;line-height:1}
+.refresh.spin{animation:spin .6s ease}
+@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
 .switch{width:46px;height:26px;background:#ddd;border-radius:13px;position:relative;cursor:pointer;transition:.2s}
 .switch.on{background:#34c759}
 .switch::after{content:'';width:22px;height:22px;background:#fff;border-radius:50%;position:absolute;top:2px;left:2px;transition:.2s;box-shadow:0 1px 2px rgba(0,0,0,.2)}
@@ -107,7 +108,14 @@ async function tog(uid){
   else{await exec('echo '+uid+' > '+SYS+'/add_uid');blocked.add(uid)}
   render();
 }
-document.getElementById('rf').onclick=()=>{init();};
+const rf=document.getElementById('rf');
+rf.onclick=()=>{
+  rf.classList.remove('spin');
+  void rf.offsetWidth; // 强制 reflow 重启动画
+  rf.classList.add('spin');
+  init();
+};
+rf.addEventListener('animationend',()=>rf.classList.remove('spin'));
 init();
 </script>
 </body>
