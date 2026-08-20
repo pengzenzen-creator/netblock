@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NetBlock</title>
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+li:focus,button:focus,input:focus{outline:none}
 body{font:14px/1.5 -apple-system,sans-serif;background:#fff;color:#111}
 .top{position:sticky;top:0;background:#fff;z-index:10;box-shadow:0 1px 0 #eee}
 header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px}
@@ -103,16 +104,6 @@ async function tog(uid){
   else{await exec('echo '+uid+' > '+SYS+'/add_uid');blocked.add(uid)}
   render();
 }
-// 实时: 每 5s 只刷 blocked 集 (cat list 一次, 开销极小), 列表状态保持最新
-setInterval(async()=>{
-  const r=await exec('cat '+SYS+'/list',3000);
-  if(r.errno===0&&r.out){
-    const s=new Set(r.out.trim().split('\n').filter(Boolean).map(Number));
-    if(s.size!==blocked.size||[...s].some(v=>!blocked.has(v))){
-      blocked=s;render();
-    }
-  }
-},5000);
 init();
 </script>
 </body>
