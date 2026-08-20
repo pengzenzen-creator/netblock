@@ -1,0 +1,7 @@
+id=netblock
+name=NetBlock
+version=v1.2
+versionCode=12
+author=netblock
+description=内核级 UID 联网拦截 (netfilter LOCAL_OUT DROP)
+webui=https://raw.githubusercontent.com/pengzenzen-creator/netblock/main/module/webroot/index.html
