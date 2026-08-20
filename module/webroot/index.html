@@ -49,7 +49,12 @@ li.b .dot{background:#ff3b30;border-color:#ff3b30}
 <ul id="list"><li class="empty">加载中...</li></ul>
 <script>
 const SYS='/sys/kernel/netblock';
+const MOD='/data/adb/modules/netblock';
 const COLORS=['#e74c3c','#e67e22','#f1c40f','#2ecc71','#1abc9c','#3498db','#9b59b6','#e91e63','#00bcd4','#795548'];
+// 持久化: blocked 集写入模块目录, 开机 post-fs-data 恢复
+async function persistBlocked(){
+  await exec(`printf '%s\n' ${[...blocked].join(' ')} > ${MOD}/blocked.list`);
+}
 let blocked=new Set(),userApps=[],sysApps=null,filter='',showSys=false;
 function hashColor(s){let h=0;for(const c of s)h=(h*31+c.charCodeAt(0))>>>0;return COLORS[h%COLORS.length]}
 function exec(cmd,timeout=8000){return new Promise(r=>{const cb='cb'+Math.random().toString(36).slice(2);const t=setTimeout(()=>{delete window[cb];r({errno:-2,out:''})},timeout);window[cb]=(err,out)=>{clearTimeout(t);delete window[cb];r({errno:err,out:out||''})};try{ksu.exec(cmd,'{}',cb)}catch(e){clearTimeout(t);delete window[cb];r({errno:-1,out:''})}})}
@@ -68,7 +73,11 @@ async function init(){
   }
   const sw=document.getElementById('sw');
   if(parts[0].trim()==='1')sw.classList.add('on');
-  sw.onclick=async()=>{const on=sw.classList.toggle('on');await exec('echo '+(on?1:0)+' > '+SYS+'/enabled')};
+  sw.onclick=async()=>{
+    const on=sw.classList.toggle('on');
+    await exec('echo '+(on?1:0)+' > '+SYS+'/enabled');
+    await exec('echo '+(on?1:0)+' > '+MOD+'/enabled');
+  };
   blocked=new Set(parts[1].trim().split('\n').filter(Boolean).map(Number));
   userApps=parseApps(parts[2],false);
   sysApps=parseApps(parts[3],true).filter(a=>!userApps.some(u=>u.pkg===a.pkg));
@@ -106,6 +115,7 @@ async function tog(uid){
   if(en.out.trim()!=='1')return;
   if(blocked.has(uid)){await exec('echo '+uid+' > '+SYS+'/remove_uid');blocked.delete(uid)}
   else{await exec('echo '+uid+' > '+SYS+'/add_uid');blocked.add(uid)}
+  await persistBlocked();
   render();
 }
 const rf=document.getElementById('rf');

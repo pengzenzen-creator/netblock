@@ -6,7 +6,8 @@
  * 注册 netfilter hooks + SOCK_INODE 获取 socket 属主 UID
  *
  * 原理: netfilter LOCAL_OUT hook, 检查 socket 属主 UID 是否在阻止列表
- *       → 是则 NF_DROP 静默丢弃 (TCP+UDP, IPv4+IPv6 全覆盖, 零响应包)
+ *       → 是则 nf_reject_skb_v4/v6 回 TCP RST / ICMP port unreachable
+ *         (应用 connect 立即 ECONNREFUSED → 立即显示断网, 而非超时转圈)
  *       O(1) hashmap 查找, 业界标准做法 (与 netd 防火墙同层级)
  *
  * 控制接口 (sysfs, KSU WebUI 通过它控制):
@@ -35,6 +36,12 @@
 #include <linux/kobject.h>
 #include <net/sock.h>
 #include <net/rtnetlink.h>
+#include <linux/icmp.h>
+#include <net/netfilter/ipv4/nf_reject.h>
+#if IS_ENABLED(CONFIG_IPV6)
+#include <linux/icmpv6.h>
+#include <net/netfilter/ipv6/nf_reject.h>
+#endif
 
 
 #define NETBLOCK_HASH_BITS 8
@@ -148,8 +155,20 @@ static unsigned int netblock_hook(void *priv, struct sk_buff *skb,
 	if (uid < 10000)
 		return NF_ACCEPT; /* 不拦系统/root */
 
-	if (netblock_uid_blocked(uid))
-		return NF_DROP; /* 直接静默丢包阻断, 不生成任何响应 */
+	if (netblock_uid_blocked(uid)) {
+		/* REJECT: 回 TCP RST / ICMP port unreachable
+		 * → 应用 connect 立即得到 ECONNREFUSED, 立即显示断网
+		 * (而非 DROP 的静默超时一直加载) */
+		if (state->pf == NFPROTO_IPV4)
+			return nf_reject_skb_v4(state->net, skb, state,
+						ICMP_DEST_UNREACH, ICMP_PORT_UNREACH);
+#if IS_ENABLED(CONFIG_IPV6)
+		else if (state->pf == NFPROTO_IPV6)
+			return nf_reject_skb_v6(state->net, skb, state,
+						ICMPV6_PORT_UNREACH, ICMPV6_PORT_UNREACH);
+#endif
+		return NF_DROP;
+	}
 
 	return NF_ACCEPT;
 }
