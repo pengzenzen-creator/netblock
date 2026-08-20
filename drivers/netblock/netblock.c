@@ -2,15 +2,16 @@
 /*
  * netblock - UID 级联网阻止 (独立内核模块)
  *
- * 拦截架构 (零数据路径开销):
- *   TCP: kprobe tcp_v4_connect/tcp_v6_connect → 建连时查一次 bitmap
- *        → 命中直接返回 -ECONNREFUSED (应用立即断网)
- *        连接建立后数据包零检查 (无 netfilter 每包开销)
- *   UDP: netfilter LOCAL_OUT hook 兜底 (UDP 无连接语义, 只能每包查)
- *        → 命中 nf_reject_skb_v6 回 ICMP port unreachable
+ * 拦截架构 (零数据路径开销, 等效 LSM socket_connect):
+ *   connect() 统一挂点: kprobe inet_stream_connect / inet_dgram_connect
+ *   / ip6_datagram_connect (覆盖 TCP+UDP, IPv4+IPv6 全部 connect 系统调用)
+ *   → 建连时查一次 bitmap, 命中直接返回 -ECONNREFUSED (应用立即断网)
+ *   连接建立后数据路径零检查
  *
- * 数据结构: bitmap 数组 (UID 空间固定 ≤100000, 8KB 内存)
- *   查/增/删均为 O(1) 一次索引, 无 hash 计算无链表无 RCU
+ *   UDP 未 connect (sendto) 兜底: netfilter LOCAL_OUT (Android 罕见路径)
+ *
+ * 数据结构: bitmap 数组 (Android uid 上限 user_id*100000+appid ≤ 10^7)
+ *   O(1) 一次索引, 无 hash 无链表无 RCU, 静态 1.25MB
  *
  * 控制接口 (sysfs, KSU WebUI 通过它控制):
  *   /sys/kernel/netblock/enabled      写 0/1 启停
@@ -19,7 +20,8 @@
  *   /sys/kernel/netblock/clear        写 1 清空
  *   /sys/kernel/netblock/list         读 列出阻止的 uid
  *
- * 仅标准内核 API (kprobe/netfilter/bitmap/sock), KMI 冻结下 6.6 全系兼容
+ * 说明: Linux 6.6 security_add_hooks 为 __init, LSM 栈启动时固定,
+ * 可加载模块无法注册 LSM hook → 用 kprobe 挂 connect 统一入口等效实现
  */
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -41,8 +43,8 @@
 #include <net/netfilter/ipv6/nf_reject.h>
 #endif
 
-/* UID 空间: Android app uid = appid + user_id*100000, 上限 100000 */
-#define NETBLOCK_UID_MAX 100000
+/* Android uid = user_id*100000 + appid, 多用户下可达 ~10^7 */
+#define NETBLOCK_UID_MAX 10000000
 static DECLARE_BITMAP(netblock_bitmap, NETBLOCK_UID_MAX);
 static bool netblock_enabled;
 
@@ -72,13 +74,15 @@ static void netblock_uid_clear(void)
 	bitmap_zero(netblock_bitmap, NETBLOCK_UID_MAX);
 }
 
-/* ==================== TCP: kprobe connect 拦截 (零数据路径开销) ====================
- * 仅建连时查一次, 命中返回 -ECONNREFUSED 并跳过原函数
- * 连接建立后所有数据包不再经过任何检查
+/* ==================== connect() 拦截 (等效 LSM socket_connect) ====================
+ * kprobe 挂三个 connect 统一入口: 一个 pre_handler 共用
+ * 参数: arm64 x0 = struct sock *sk (inet_stream_connect/inet_dgram_connect
+ *       /ip6_datagram_connect 首参均为 struct sock *)
+ * 命中 → 跳过原函数返回 -ECONNREFUSED, 应用立即感知断网
+ * 数据路径零开销 (仅建连时一次)
  */
 static int netblock_connect_pre(struct kprobe *p, struct pt_regs *regs)
 {
-	/* arm64: sock *sk 在 x0 = regs[0] */
 	struct sock *sk = (struct sock *)regs->regs[0];
 	uid_t uid;
 
@@ -92,45 +96,45 @@ static int netblock_connect_pre(struct kprobe *p, struct pt_regs *regs)
 		return 0; /* 不拦系统/root */
 
 	if (netblock_uid_blocked(uid)) {
-		/* 跳过原函数, connect 直接返回 -ECONNREFUSED */
 		regs->regs[0] = -ECONNREFUSED;
-		return 1;
+		return 1; /* 跳过原函数 */
 	}
 	return 0;
 }
 
-static struct kprobe netblock_kp_tcp4 = {
-	.symbol_name = "tcp_v4_connect",
+static struct kprobe netblock_kp_stream = {
+	.symbol_name = "inet_stream_connect",
 	.pre_handler = netblock_connect_pre,
 };
-#if IS_ENABLED(CONFIG_IPV6)
-static struct kprobe netblock_kp_tcp6 = {
-	.symbol_name = "tcp_v6_connect",
+static struct kprobe netblock_kp_dgram = {
+	.symbol_name = "inet_dgram_connect",
 	.pre_handler = netblock_connect_pre,
 };
-#endif
+static struct kprobe netblock_kp_dgram6 = {
+	.symbol_name = "ip6_datagram_connect",
+	.pre_handler = netblock_connect_pre,
+};
 
 static void netblock_kprobes_register(void)
 {
-	if (register_kprobe(&netblock_kp_tcp4))
-		pr_info("netblock: tcp_v4_connect kprobe fail, TCP 走 netfilter\n");
-#if IS_ENABLED(CONFIG_IPV6)
-	if (register_kprobe(&netblock_kp_tcp6))
-		pr_info("netblock: tcp_v6_connect kprobe fail, TCP6 走 netfilter\n");
-#endif
+	if (register_kprobe(&netblock_kp_stream))
+		pr_info("netblock: inet_stream_connect kprobe fail\n");
+	if (register_kprobe(&netblock_kp_dgram))
+		pr_info("netblock: inet_dgram_connect kprobe fail\n");
+	if (register_kprobe(&netblock_kp_dgram6))
+		pr_info("netblock: ip6_datagram_connect kprobe fail\n");
 }
 
 static void netblock_kprobes_unregister(void)
 {
-	unregister_kprobe(&netblock_kp_tcp4);
-#if IS_ENABLED(CONFIG_IPV6)
-	unregister_kprobe(&netblock_kp_tcp6);
-#endif
+	unregister_kprobe(&netblock_kp_stream);
+	unregister_kprobe(&netblock_kp_dgram);
+	unregister_kprobe(&netblock_kp_dgram6);
 }
 
-/* ==================== UDP 兜底: netfilter LOCAL_OUT ====================
- * UDP 无 connect 语义 (sendto 无需建连), 只能每包查 bitmap (O(1) 索引, 开销可忽略)
- * TCP 已由 kprobe 拦, 此处跳过 TCP 减少重复检查
+/* ==================== UDP sendto 兜底: netfilter LOCAL_OUT ====================
+ * UDP 未 connect 时 (sendto 不经过 connect 挂点), 只能每包查 (O(1))
+ * TCP 已由 kprobe 拦, 此处跳过
  */
 static inline uid_t netblock_sock2uid(struct sock *sk)
 {
@@ -164,7 +168,6 @@ static unsigned int netblock_hook(void *priv, struct sk_buff *skb,
 		return NF_ACCEPT; /* 不拦系统/root */
 
 	if (netblock_uid_blocked(uid)) {
-		/* ICMP port unreachable → 应用立即感知 */
 		if (state->pf == NFPROTO_IPV4)
 			return nf_reject_skb_v4(state->net, skb, state,
 						ICMP_DEST_UNREACH, ICMP_PORT_UNREACH);
@@ -347,7 +350,7 @@ static int __init netblock_init(void)
 		return ret;
 	}
 
-	pr_info("netblock: loaded (TCP kprobe + UDP netfilter, sysfs: /sys/kernel/netblock)\n");
+	pr_info("netblock: loaded (connect kprobe + UDP netfilter, sysfs: /sys/kernel/netblock)\n");
 	return 0;
 }
 
@@ -366,4 +369,4 @@ module_exit(netblock_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("ReSukiSU-Ultra");
-MODULE_DESCRIPTION("netblock - UID level network blocking (TCP kprobe + UDP netfilter)");
+MODULE_DESCRIPTION("netblock - UID network blocking (connect kprobe, zero data-path cost)");
