@@ -55,9 +55,10 @@ function parseApps(out,isSys){
 }
 // 后端优化: 一次 exec 拿全部 (enabled + blocked + 三方应用), 系统应用懒加载
 async function init(){
-  const r=await exec('cat '+SYS+'/enabled; echo ---; cat '+SYS+'/list; echo ---; pm list packages -U -e -3',12000);
+  // 一次 exec 拿全部 (enabled | blocked | 三方 | 系统) — 一次 root shell, 最快
+  const r=await exec('cat '+SYS+'/enabled; echo ---; cat '+SYS+'/list; echo ---; pm list packages -U -e -3; echo ---; pm list packages -U -e -s',15000);
   const parts=r.out.split('---');
-  if(r.errno!==0||parts.length<3||(parts[0].trim()!=='0'&&parts[0].trim()!=='1')){
+  if(r.errno!==0||parts.length<4||(parts[0].trim()!=='0'&&parts[0].trim()!=='1')){
     document.getElementById('list').innerHTML='<li class="hint">模块未加载</li>';return;
   }
   const sw=document.getElementById('sw');
@@ -65,21 +66,16 @@ async function init(){
   sw.onclick=async()=>{const on=sw.classList.toggle('on');await exec('echo '+(on?1:0)+' > '+SYS+'/enabled')};
   blocked=new Set(parts[1].trim().split('\n').filter(Boolean).map(Number));
   userApps=parseApps(parts[2],false);
+  sysApps=parseApps(parts[3],true).filter(a=>!userApps.some(u=>u.pkg===a.pkg));
   const ms=document.getElementById('showSys');
-  ms.onclick=async()=>{
-    showSys=ms.classList.toggle('on');
-    if(showSys&&!sysApps){ // 懒加载: 首次打开才拉系统应用
-      const sr=await exec('pm list packages -U -e -s',12000);
-      sysApps=parseApps(sr.out,true).filter(a=>!userApps.some(u=>u.pkg===a.pkg));
-    }
-    render();
-  };
+  ms.onclick=()=>{showSys=ms.classList.toggle('on');render()};
   document.getElementById('q').oninput=e=>{filter=e.target.value;render()};
   render();
-  try{ // label 尽力而为: 缓存有就用
-    const names=JSON.stringify(userApps.map(p=>p.pkg));
+  try{ // label 尽力而为: 全量补 (三方+系统), 缓存有就用
+    const all=[...userApps,...sysApps];
+    const names=JSON.stringify(all.map(p=>p.pkg));
     const info=JSON.parse(ksu.getPackagesInfo(names));
-    info.forEach(i=>{if(!i.error&&i.appLabel){const p=userApps.find(x=>x.pkg===i.packageName);if(p)p.label=i.appLabel}});
+    info.forEach(i=>{if(!i.error&&i.appLabel){const p=all.find(x=>x.pkg===i.packageName);if(p)p.label=i.appLabel}});
     render();
   }catch(e){}
 }
@@ -107,6 +103,16 @@ async function tog(uid){
   else{await exec('echo '+uid+' > '+SYS+'/add_uid');blocked.add(uid)}
   render();
 }
+// 实时: 每 5s 只刷 blocked 集 (cat list 一次, 开销极小), 列表状态保持最新
+setInterval(async()=>{
+  const r=await exec('cat '+SYS+'/list',3000);
+  if(r.errno===0&&r.out){
+    const s=new Set(r.out.trim().split('\n').filter(Boolean).map(Number));
+    if(s.size!==blocked.size||[...s].some(v=>!blocked.has(v))){
+      blocked=s;render();
+    }
+  }
+},5000);
 init();
 </script>
 </body>
