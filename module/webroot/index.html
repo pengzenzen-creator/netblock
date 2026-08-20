@@ -54,28 +54,13 @@ function parseApps(out,isSys){
   return arr;
 }
 async function loadLabels(arr){
+  // 只信官方 getPackagesInfo: 管理器缓存有 label 就用, 没有保持包名 (绝不猜)
   try{
     const names=JSON.stringify(arr.map(p=>p.pkg));
     const info=JSON.parse(ksu.getPackagesInfo(names));
     info.forEach(i=>{if(!i.error&&i.appLabel){const p=arr.find(x=>x.pkg===i.packageName);if(p)p.label=i.appLabel}});
+    render();
   }catch(e){}
-  const batch=arr.filter(p=>p.label===p.pkg).slice(0,60);
-  let i=0;
-  const step=async()=>{
-    if(i>=batch.length){render();return}
-    const p=batch[i++];
-    const r=await exec(`cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER ${p.pkg} 2>/dev/null`,3000);
-    if(!r.timeout&&r.out){
-      const lines=r.out.split('\n').filter(l=>l&&!l.includes('priority='));
-      if(lines.length&&lines[0].includes('/')){
-        const act=lines[0].split('/').pop();
-        if(act&&act.length<40)p.label=act.replace(/(Activity|$)/,'');
-      }
-    }
-    if(i%10===0)render();
-    setTimeout(step,15);
-  };
-  step();
 }
 async function init(){
   const en=await exec('cat '+SYS+'/enabled');
