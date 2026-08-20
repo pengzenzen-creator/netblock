@@ -85,7 +85,10 @@ async function init(){
 }
 function render(){
   const kw=filter.toLowerCase();
-  let arr=showSys&&sysApps?[...userApps,...sysApps]:userApps;
+  // 已阻止的应用永远显示 (不受"显示系统应用"开关影响)
+  const blockedSys=(sysApps||[]).filter(a=>blocked.has(a.uid));
+  let arr=[...userApps,...blockedSys];
+  if(showSys&&sysApps)arr=[...arr,...sysApps.filter(a=>!blockedSys.some(b=>b.uid===a.uid))];
   if(kw)arr=arr.filter(a=>a.pkg.includes(kw)||a.label.toLowerCase().includes(kw));
   arr.sort((a,b)=>{
     const ab=blocked.has(a.uid)?0:1,bb=blocked.has(b.uid)?0:1;
