@@ -118,7 +118,7 @@ static void netblock_uid_clear(void)
 	mutex_unlock(&netblock_mutex);
 }
 
-/* ==================== netfilter hook ====================/* ==================== netfilter hook (UDP 兜底) ==================== */
+/* ==================== netfilter hook ==================== */
 
 static inline uid_t netblock_sock2uid(struct sock *sk)
 {
