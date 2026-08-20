@@ -6,8 +6,8 @@
 <title>NetBlock</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font:14px/1.5 -apple-system,sans-serif;background:#fff;color:#111}
-header{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid #eee;position:sticky;top:0;background:#fff}
+body{font:14px/1.5 -apple-system,sans-serif;background:#fff;color:#111;padding-bottom:60px}
+header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #eee;position:sticky;top:0;background:#fff;z-index:10}
 h1{font-size:17px;font-weight:600}
 .switch{width:46px;height:26px;background:#ddd;border-radius:13px;position:relative;cursor:pointer;transition:.2s}
 .switch.on{background:#34c759}
@@ -15,10 +15,20 @@ h1{font-size:17px;font-weight:600}
 .switch.on::after{left:22px}
 .search{padding:10px 16px;border-bottom:1px solid #eee;position:sticky;top:57px;background:#fff;z-index:5}
 .search input{width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:14px;outline:none}
+.togglebar{padding:8px 16px;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;justify-content:space-between;background:#fafafa}
+.togglebar label{font-size:13px;color:#666}
+.mini{width:36px;height:20px;background:#ddd;border-radius:10px;position:relative;cursor:pointer;transition:.2s}
+.mini.on{background:#34c759}
+.mini::after{content:'';width:16px;height:16px;background:#fff;border-radius:50%;position:absolute;top:2px;left:2px;transition:.2s;box-shadow:0 1px 2px rgba(0,0,0,.2)}
+.mini.on::after{left:18px}
 ul{list-style:none}
-li{display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid #f5f5f5;cursor:pointer;gap:10px}
+li{display:flex;align-items:center;padding:11px 16px;border-bottom:1px solid #f5f5f5;cursor:pointer;gap:10px}
 li:active{background:#fafafa}
-.pkg{flex:1;min-width:0;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.icon{width:32px;height:32px;border-radius:7px;background:#e8e8e8;display:flex;align-items:center;justify-content:center;font-weight:600;color:#666;flex-shrink:0;font-size:15px}
+li.b .icon{background:#ffe3e0;color:#ff3b30}
+.info{flex:1;min-width:0}
+.name{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pkg{font-size:11px;color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dot{width:14px;height:14px;border:1.5px solid #ccc;border-radius:50%;flex-shrink:0}
 li.b .dot{background:#ff3b30;border-color:#ff3b30}
 .empty{padding:30px;text-align:center;color:#999;cursor:default}
@@ -27,31 +37,73 @@ li.b .dot{background:#ff3b30;border-color:#ff3b30}
 </head>
 <body>
 <header><h1>NetBlock</h1><div class="switch" id="sw"></div></header>
-<div class="search"><input id="q" placeholder="搜索"></div>
+<div class="search"><input id="q" placeholder="搜索应用"></div>
+<div class="togglebar"><label>显示系统应用</label><div class="mini" id="showSys"></div></div>
 <ul id="list"><li class="empty">加载中...</li></ul>
 <script>
 const SYS='/sys/kernel/netblock';
-let blocked=new Set(),apps=[],filter='';
+let blocked=new Set(),userApps=[],sysApps=[],filter='',showSys=false;
 function exec(cmd){return new Promise(r=>{const cb='cb'+Math.random().toString(36).slice(2);const t=setTimeout(()=>{delete window[cb];r({errno:-2,out:''})},8000);window[cb]=(err,out)=>{clearTimeout(t);delete window[cb];r({errno:err,out:out||''})};try{ksu.exec(cmd,'{}',cb)}catch(e){clearTimeout(t);delete window[cb];r({errno:-1,out:''})}})}
+function parseApps(out,isSys){
+  const arr=[];
+  out.split('\n').forEach(l=>{const m=l.match(/^package:(.+?) uid:(\d+)$/);if(m)arr.push({pkg:m[1],uid:+m[2],label:m[1],sys:isSys})});
+  return arr;
+}
+async function loadLabels(arr){
+  // 1) 官方 getPackagesInfo: 管理器缓存已加载则有 label (尽力而为)
+  try{
+    const names=JSON.stringify(arr.map(p=>p.pkg));
+    const info=JSON.parse(ksu.getPackagesInfo(names));
+    info.forEach(i=>{if(!i.error&&i.appLabel){const p=arr.find(x=>x.pkg===i.packageName);if(p)p.label=i.appLabel}});
+  }catch(e){}
+  // 2) 后台补: resolve-activity 拿 activity 名当 label (只补可见前 50, 分批)
+  const batch=arr.filter(p=>p.label===p.pkg).slice(0,50);
+  let i=0;
+  const step=async()=>{
+    if(i>=batch.length){render();return}
+    const p=batch[i++];
+    const r=await exec(`cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER ${p.pkg} 2>/dev/null`,3000);
+    if(!r.timeout&&r.out){
+      const lines=r.out.split('\n').filter(l=>l&&!l.includes('priority='));
+      if(lines.length&&lines[0].includes('/')){
+        const act=lines[0].split('/').pop();
+        if(act&&act.length<40)p.label=act.replace(/(Activity|Activity$)/,'');
+      }
+    }
+    if(i%10===0)render();
+    setTimeout(step,15);
+  };
+  step();
+}
 async function init(){
   const en=await exec('cat '+SYS+'/enabled');
   if(en.errno!==0||(en.out.trim()!=='0'&&en.out.trim()!=='1')){document.getElementById('list').innerHTML='<li class="hint">模块未加载</li>';return}
   const sw=document.getElementById('sw');
   if(en.out.trim()==='1')sw.classList.add('on');
   sw.onclick=async()=>{const on=sw.classList.toggle('on');await exec('echo '+(on?1:0)+' > '+SYS+'/enabled')};
-  const r=await exec('pm list packages -U -e');
-  r.out.split('\n').forEach(l=>{const m=l.match(/^package:(.+?) uid:(\d+)$/);if(m&&+m[2]>=10000)apps.push({pkg:m[1],uid:+m[2]})});
+  const ms=document.getElementById('showSys');
+  ms.onclick=()=>{showSys=ms.classList.toggle('on');render()};
+  const [ur,sr]=await Promise.all([exec('pm list packages -U -e -3'),exec('pm list packages -U -e -s')]);
+  userApps=parseApps(ur.out,false);
+  sysApps=parseApps(sr.out,true).filter(a=>!userApps.some(u=>u.pkg===a.pkg));
   const bl=await exec('cat '+SYS+'/list');
   blocked=new Set(bl.out.trim().split('\n').filter(Boolean).map(Number));
   document.getElementById('q').oninput=e=>{filter=e.target.value;render()};
   render();
+  loadLabels([...userApps,...sysApps]);
 }
 function render(){
   const kw=filter.toLowerCase();
-  const list=apps.filter(a=>!kw||a.pkg.includes(kw));
-  document.getElementById('list').innerHTML=list.length?list.map(a=>{
+  let arr=showSys?[...userApps,...sysApps]:userApps;
+  if(kw)arr=arr.filter(a=>a.pkg.includes(kw)||a.label.toLowerCase().includes(kw));
+  arr.sort((a,b)=>{
+    const ab=blocked.has(a.uid)?0:1,bb=blocked.has(b.uid)?0:1;
+    if(ab!==bb)return ab-bb;
+    return a.label.localeCompare(b.label);
+  });
+  document.getElementById('list').innerHTML=arr.length?arr.map(a=>{
     const b=blocked.has(a.uid);
-    return `<li class="${b?'b':''}" onclick="tog(${a.uid})"><span class="pkg">${a.pkg}</span><span class="dot"></span></li>`;
+    return `<li class="${b?'b':''}" onclick="tog(${a.uid})"><div class="icon">${(a.label[0]||'?').toUpperCase()}</div><div class="info"><div class="name">${a.label}</div><div class="pkg">${a.pkg}</div></div><span class="dot"></span></li>`;
   }).join(''):'<li class="empty">无应用</li>';
 }
 async function tog(uid){
