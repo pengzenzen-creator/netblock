@@ -5,9 +5,9 @@
  * 骨架参考 ReKernel-X (Sakion Team / myflavor): hashmap UID 管理 + for_each_net
  * 注册 netfilter hooks + SOCK_INODE 获取 socket 属主 UID
  *
- * 原理: netfilter LOCAL_OUT hook, 检查 socket 属主 UID 是否在阻止列表
- *       → 是则 NF_DROP 静默丢弃 (TCP+UDP, IPv4+IPv6 全覆盖, 零响应包)
- *       O(1) hashmap 查找, 业界标准做法 (与 netd 防火墙同层级)
+ * 原理: TCP 建连时 kprobe 拦截 (tcp_v4/v6_connect) → 直接返回 -ECONNREFUSED
+ *       UDP 由 netfilter LOCAL_OUT hook 兜底 → 直接 NF_DROP 静默阻断
+ *       零响应包生成, 应用直接断网
  *
  * 控制接口 (sysfs, KSU WebUI 通过它控制):
  *   /sys/kernel/netblock/enabled      写 0/1 启停
@@ -35,6 +35,8 @@
 #include <linux/kobject.h>
 #include <net/sock.h>
 #include <net/rtnetlink.h>
+#include <linux/kprobes.h>
+#include <net/tcp.h>
 
 
 #define NETBLOCK_HASH_BITS 8
@@ -118,7 +120,69 @@ static void netblock_uid_clear(void)
 	mutex_unlock(&netblock_mutex);
 }
 
-/* ==================== netfilter hook ====================/* ==================== netfilter hook (UDP 兜底) ==================== */
+/* ==================== socket 层拦截 (kprobe tcp_v4/v6_connect) ====================
+ * TCP 建连时检查一次 UID → 命中直接返回 -ECONNREFUSED
+ * 零每包开销 (仅建连一次), 应用立即感知断网
+ */
+static int netblock_connect_pre(struct kprobe *p, struct pt_regs *regs)
+{
+	/* arm64: sock 在 x0, addr 在 x1 */
+	struct sock *sk = (struct sock *)regs->regs[0];
+	uid_t uid;
+
+	if (!netblock_enabled)
+		return 0;
+	if (!sk || !sk->sk_socket)
+		return 0;
+
+	uid = SOCK_INODE(sk->sk_socket)->i_uid.val;
+	if (uid < 10000)
+		return 0;
+	if (netblock_uid_blocked(uid)) {
+		/* 返回非 0 跳过原函数, 直接返回 -ECONNREFUSED */
+		regs->regs[0] = -ECONNREFUSED;
+		return 1;
+	}
+	return 0;
+}
+
+static struct kprobe netblock_kp_tcp4 = {
+	.symbol_name = "tcp_v4_connect",
+	.pre_handler = netblock_connect_pre,
+};
+#ifdef CONFIG_IPV6
+static struct kprobe netblock_kp_tcp6 = {
+	.symbol_name = "tcp_v6_connect",
+	.pre_handler = netblock_connect_pre,
+};
+#endif
+
+static int netblock_kprobes_register(void)
+{
+	int ret;
+
+	ret = register_kprobe(&netblock_kp_tcp4);
+	if (ret)
+		pr_info("netblock: tcp_v4_connect kprobe failed (%d), TCP 走 netfilter
+", ret);
+#ifdef CONFIG_IPV6
+	ret = register_kprobe(&netblock_kp_tcp6);
+	if (ret)
+		pr_info("netblock: tcp_v6_connect kprobe failed (%d), TCP6 走 netfilter
+", ret);
+#endif
+	return 0;
+}
+
+static void netblock_kprobes_unregister(void)
+{
+	unregister_kprobe(&netblock_kp_tcp4);
+#ifdef CONFIG_IPV6
+	unregister_kprobe(&netblock_kp_tcp6);
+#endif
+}
+
+/* ==================== netfilter hook (UDP 兜底) ==================== */
 
 static inline uid_t netblock_sock2uid(struct sock *sk)
 {
@@ -306,6 +370,7 @@ static int __init netblock_init(void)
 	hash_init(netblock_uid_map);
 	netblock_enabled = false;
 
+	netblock_kprobes_register();
 	ret = netblock_register();
 	if (ret)
 		return ret;
@@ -330,6 +395,7 @@ static void __exit netblock_exit(void)
 {
 	sysfs_remove_group(netblock_kobj, &netblock_attr_group);
 	kobject_put(netblock_kobj);
+	netblock_kprobes_unregister();
 	__netblock_unregister();
 	netblock_uid_clear();
 	pr_info("netblock: unloaded\n");

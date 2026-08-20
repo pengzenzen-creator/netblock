@@ -1,7 +1,0 @@
-id=netblock
-name=NetBlock
-version=1.0
-versionCode=1
-author=ReSukiSU-Ultra
-description=内核级 UID 联网拦截 (netfilter LOCAL_OUT, KMI 冻结 6.6 全系兼容)
-webui=https://raw.githubusercontent.com/pengzenzen-creator/netblock/main/module/webroot/index.html
