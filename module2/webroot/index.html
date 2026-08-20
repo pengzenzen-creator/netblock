@@ -50,9 +50,6 @@ header h1 { font-size: 17px; font-weight: 600; }
   padding: 10px 16px;
   background: #fff;
   border-bottom: 1px solid #eee;
-  position: sticky;
-  top: 57px;
-  z-index: 9;
 }
 .search input {
   width: 100%;
@@ -110,11 +107,10 @@ ul.apps li:active { background: #f5f5f5; }
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: 13px;
   color: #fff;
 }
 .app-check.blocked { background: #ff3b30; border-color: #ff3b30; }
-.empty { padding: 32px 16px; text-align: center; color: #999; font-size: 14px; }
 
 .toast {
   position: fixed;
@@ -145,7 +141,7 @@ ul.apps li:active { background: #f5f5f5; }
   <input type="text" id="searchInput" placeholder="搜索应用">
 </div>
 
-<ul class="apps" id="appList"><li class="empty">加载中...</li></ul>
+<ul class="apps" id="appList"></ul>
 
 <div class="toast" id="toast"></div>
 
@@ -176,49 +172,41 @@ function exec(cmd) {
 }
 
 let blockedUids = new Set();
-let allApps = [];
-let currentFilter = '';
-
-// pm list packages --uid 一次拿全 (高效, 不依赖管理器缓存)
-async function loadApps() {
-  const r = await exec('pm list packages --uid -e');
-  const pkgs = {};
-  r.stdout.split('\n').forEach(line => {
-    const m = line.match(/^package:(.+?) uid=(\d+)$/);
-    if (m && parseInt(m[2]) >= 10000) {
-      pkgs[m[1]] = parseInt(m[2]);
-    }
-  });
-  allApps = Object.entries(pkgs)
-    .map(([pkg, uid]) => ({ pkg, uid, label: pkg }))
-    .sort((a, b) => a.pkg.localeCompare(b.pkg));
-}
 
 async function loadBlocked() {
   const r = await exec(`cat ${SYS}/list`);
   blockedUids = new Set(r.stdout.trim().split('\n').filter(Boolean).map(Number));
 }
 
+async function loadApps() {
+  try {
+    const pkgs = JSON.parse(ksu.listPackages('user'));
+    const info = JSON.parse(ksu.getPackagesInfo(pkgs));
+    return info.filter(a => a.uid >= 10000);
+  } catch (e) {
+    return [];
+  }
+}
+
+let allApps = [];
+let currentFilter = '';
+
 function render() {
   const list = document.getElementById('appList');
   const kw = currentFilter.toLowerCase();
   const apps = allApps.filter(a =>
-    !kw || a.pkg.toLowerCase().includes(kw)
+    !kw || a.appLabel.toLowerCase().includes(kw) || a.packageName.toLowerCase().includes(kw)
   );
-  if (apps.length === 0) {
-    list.innerHTML = '<li class="empty">无匹配应用</li>';
-    return;
-  }
   list.innerHTML = apps.map(a => `
-    <li onclick="toggle('${a.pkg}', ${a.uid})">
-      <div class="app-icon">${(a.label[0] || '?').toUpperCase()}</div>
+    <li onclick="toggle('${a.packageName}', ${a.uid})">
+      <div class="app-icon">${(a.appLabel[0] || '?').toUpperCase()}</div>
       <div class="app-info">
-        <div class="app-name">${a.label}</div>
-        <div class="app-pkg">${a.pkg}</div>
+        <div class="app-name">${a.appLabel}</div>
+        <div class="app-pkg">${a.packageName}</div>
       </div>
       <div class="app-check ${blockedUids.has(a.uid) ? 'blocked' : ''}">${blockedUids.has(a.uid) ? '✕' : ''}</div>
     </li>
-  `).join('');
+  `).join('') || '<li style="padding:24px;text-align:center;color:#999">无匹配应用</li>';
 }
 
 async function toggle(pkg, uid) {
@@ -230,11 +218,11 @@ async function toggle(pkg, uid) {
   if (blockedUids.has(uid)) {
     await exec(`echo ${uid} > ${SYS}/remove_uid`);
     blockedUids.delete(uid);
-    toast('已解除 ' + pkg);
+    toast(`已解除 ${pkg}`);
   } else {
     await exec(`echo ${uid} > ${SYS}/add_uid`);
     blockedUids.add(uid);
-    toast('已阻止 ' + pkg);
+    toast(`已阻止 ${pkg}`);
   }
   render();
 }
@@ -255,7 +243,7 @@ async function init() {
     render();
   });
   await loadBlocked();
-  await loadApps();
+  allApps = await loadApps();
   render();
 }
 
